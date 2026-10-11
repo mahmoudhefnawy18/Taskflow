@@ -1,6 +1,2 @@
-TaskFlow live update release
-1. Replace GitHub Pages files: index.html, app.js, sw.js, manifest.json, icon.png.
-2. Run supabase.sql in Supabase SQL Editor to enable Realtime (if the table already exists, existing tasks are retained).
-3. Refresh the installed iPhone app once after deployment to load the new version.
-4. Thereafter tasks appear immediately on the device where edited; Supabase Realtime sends updates to other open devices. Backgrounded devices catch up when reopened.
-5. Signed-in account panel, cloud-sync heading and status are hidden.
+Upload index.html, app.js, manifest.json, sw.js and icon.png to the GitHub repository root. Do not run SQL.
+Home Screen uses a separate authentication session from Safari. Sign in within the Home Screen app. To use numeric email OTP codes, configure the Supabase Auth email template to include {{ .Token }}. Otherwise email links may open Safari rather than the installed app.
