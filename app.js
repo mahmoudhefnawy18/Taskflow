@@ -1,8 +1,8 @@
 'use strict';
 // OPTIONAL: paste your Supabase project URL and public anon/publishable key below.
 // For private tasks, enable Supabase Auth and the per-user RLS SQL supplied in the instructions.
-const SUPABASE_URL = '';
-const SUPABASE_ANON_KEY = '';
+const SUPABASE_URL = 'https://dwnfdwjxijatlniazrgr.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_7sSVC1OPs7NQlA1HA4Db1w_TCIZZtTd';
 const STORE = 'taskflow-v1';
 const $ = id => document.getElementById(id);
 const dateKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -17,7 +17,7 @@ try{const parsed=JSON.parse(localStorage.getItem(STORE)||'[]');tasks=Array.isArr
 let client=null,user=null;
 if(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase){client=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY)}
 const uid=()=>crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
-function saveLocal(){localStorage.setItem(STORE,JSON.stringify(tasks));render()}
+function saveLocal(){localStorage.setItem(user ? STORE+'-'+user.id : STORE,JSON.stringify(tasks));render()}
 async function sync(){if(!client||!user)return;try{const {data,error}=await client.from('taskflow_tasks').select('*').eq('user_id',user.id);if(error)throw error;const remote=(data||[]).map(r=>r.payload);const merged=new Map(remote.map(t=>[t.id,t]));for(const t of tasks){const old=merged.get(t.id);if(!old||(t.updated_at||'')>(old.updated_at||''))merged.set(t.id,t)}tasks=[...merged.values()];saveLocal();for(const t of tasks){const {error:e}=await client.from('taskflow_tasks').upsert({id:t.id,user_id:user.id,payload:t,updated_at:t.updated_at||new Date().toISOString()});if(e)throw e}$('syncStatus').textContent='Synced with Supabase'}catch(e){$('syncStatus').textContent='Local save only — sync error: '+e.message}}
 async function persist(t){t.updated_at=new Date().toISOString();saveLocal();if(client&&user){try{const {error}=await client.from('taskflow_tasks').upsert({id:t.id,user_id:user.id,payload:t,updated_at:t.updated_at});if(error)throw error;$('syncStatus').textContent='Synced with Supabase'}catch(e){$('syncStatus').textContent='Saved locally; sync failed: '+e.message}}}
 function formatDate(s,opts={weekday:'short',day:'numeric',month:'short'}){return fromKey(s).toLocaleDateString('en-GB',opts)}
@@ -45,5 +45,12 @@ $('exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify(tasks,null,2)],{
 const del=document.createElement('button');del.type='button';del.className='danger';del.textContent='Delete task';del.style='grid-column:1/-1';del.onclick=async()=>{if(!confirm('Delete this task?'))return;const t=tasks.find(t=>t.id===$('editId').value);if(t){t.deleted=true;$('editDialog').close();await persist(t)}};$('editForm').append(del);
 let swipeX=0,swipeY=0;$('dailyPanel').addEventListener('touchstart',e=>{if(e.target.closest('.task'))return;swipeX=e.touches[0].clientX;swipeY=e.touches[0].clientY},{passive:true});$('dailyPanel').addEventListener('touchend',e=>{if(e.target.closest('.task'))return;const dx=e.changedTouches[0].clientX-swipeX,dy=e.changedTouches[0].clientY-swipeY;if(Math.abs(dx)>75&&Math.abs(dx)>Math.abs(dy)*1.5)chooseDate(dateKey(plusDays(fromKey(selected),dx<0?1:-1)))},{passive:true});
 $('taskDate').value=selected;render();
-if(client){$('syncStatus').textContent='Supabase configured: sign-in required for private sync';client.auth.getUser().then(async({data})=>{user=data?.user||null;if(user)await sync()})}
+if(client){
+  const authPanel=$('authPanel'), authInfo=$('authInfo');
+  function authUI(){authPanel.querySelector('#loginForm').hidden=!!user;authPanel.querySelector('#logoutBtn').hidden=!user;authInfo.textContent=user?'Signed in: '+user.email:'Sign in to sync tasks between devices';}
+  $('loginForm').onsubmit=async e=>{e.preventDefault();const email=$('loginEmail').value.trim();if(!email)return;authInfo.textContent='Sending sign-in link…';const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});authInfo.textContent=error?error.message:'Check your email for a sign-in link.';};
+  $('logoutBtn').onclick=async()=>{await client.auth.signOut();};
+  client.auth.onAuthStateChange((event,session)=>{const newUser=session?.user||null;if(newUser?.id===user?.id)return;user=newUser;tasks=JSON.parse(localStorage.getItem(user?STORE+'-'+user.id:STORE)||'[]');authUI();render();if(user)setTimeout(()=>sync(),0);else $('syncStatus').textContent='Saved on this device';});
+  authUI();client.auth.getSession().then(({data})=>{if(data.session?.user && !user){user=data.session.user;tasks=JSON.parse(localStorage.getItem(STORE+'-'+user.id)||'[]');authUI();render();sync();}});
+}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
