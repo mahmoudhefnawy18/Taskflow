@@ -4,6 +4,10 @@
 const SUPABASE_URL = 'https://dwnfdwjxijatlniazrgr.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_7sSVC1OPs7NQlA1HA4Db1w_TCIZZtTd';
 const STORE = 'taskflow-v1';
+let realtimeChannel=null;
+let syncBusy=false;
+let syncAgain=false;
+function setSyncStatus(message){const el=$('syncStatus');if(el)el.textContent=message;}
 const $ = id => document.getElementById(id);
 const dateKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const fromKey = s => {const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
@@ -18,8 +22,69 @@ let client=null,user=null;
 if(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase){client=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY)}
 const uid=()=>crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
 function saveLocal(){localStorage.setItem(user ? STORE+'-'+user.id : STORE,JSON.stringify(tasks));render()}
-async function sync(){if(!client||!user)return;try{const {data,error}=await client.from('taskflow_tasks').select('*').eq('user_id',user.id);if(error)throw error;const remote=(data||[]).map(r=>r.payload);const merged=new Map(remote.map(t=>[t.id,t]));for(const t of tasks){const old=merged.get(t.id);if(!old||(t.updated_at||'')>(old.updated_at||''))merged.set(t.id,t)}tasks=[...merged.values()];saveLocal();for(const t of tasks){const {error:e}=await client.from('taskflow_tasks').upsert({id:t.id,user_id:user.id,payload:t,updated_at:t.updated_at||new Date().toISOString()});if(e)throw e}$('syncStatus').textContent='Synced with Supabase'}catch(e){$('syncStatus').textContent='Local save only — sync error: '+e.message}}
-async function persist(t){t.updated_at=new Date().toISOString();saveLocal();if(client&&user){try{const {error}=await client.from('taskflow_tasks').upsert({id:t.id,user_id:user.id,payload:t,updated_at:t.updated_at});if(error)throw error;$('syncStatus').textContent='Synced with Supabase'}catch(e){$('syncStatus').textContent='Saved locally; sync failed: '+e.message}}}
+// Merge remote changes into the current view without requiring a refresh.
+// The updated_at timestamp and deleted tombstones prevent old records reappearing.
+function mergeRemote(rows){
+  const merged=new Map(tasks.map(t=>[t.id,t]));
+  for(const r of rows){
+    const t=r.payload;
+    if(!t||!t.id)continue;
+    const current=merged.get(t.id);
+    if(!current||(t.updated_at||'')>(current.updated_at||''))merged.set(t.id,t);
+  }
+  tasks=[...merged.values()];
+  saveLocal();
+}
+function subscribeRealtime(){
+  if(!client||!user)return;
+  if(realtimeChannel){client.removeChannel(realtimeChannel);realtimeChannel=null;}
+  const owner=user.id;
+  realtimeChannel=client.channel('taskflow-live-'+owner)
+    .on('postgres_changes',{
+      event:'*',schema:'public',table:'taskflow_tasks',filter:'user_id=eq.'+owner
+    },payload=>{
+      if(user?.id!==owner)return;
+      if(payload.new?.payload)mergeRemote([payload.new]);
+      if(payload.eventType==='DELETE'){
+        tasks=tasks.filter(t=>t.id!==payload.old?.id);saveLocal();
+      }
+    }).subscribe();
+}
+async function sync(){
+  if(!client||!user)return;
+  if(syncBusy){syncAgain=true;return;}
+  syncBusy=true;
+  try{
+    const owner=user.id;
+    const {data,error}=await client.from('taskflow_tasks').select('*').eq('user_id',owner);
+    if(error)throw error;
+    if(user?.id!==owner)return;
+    const remote=data||[];
+    const remoteById=new Map(remote.map(r=>[r.id,r]));
+    // First upload locally newer changes; then merge server rows.
+    for(const t of [...tasks]){
+      const r=remoteById.get(t.id);
+      if(!r||(t.updated_at||'')>(r.payload?.updated_at||r.updated_at||'')){
+        const {error:e}=await client.from('taskflow_tasks').upsert({id:t.id,user_id:owner,payload:t,updated_at:t.updated_at||new Date().toISOString()});
+        if(e)throw e;
+      }
+    }
+    if(user?.id===owner){mergeRemote(remote);setSyncStatus('');}
+  }catch(e){console.error('TaskFlow sync error',e);setSyncStatus('Sync error: '+e.message);}
+  finally{syncBusy=false;if(syncAgain){syncAgain=false;sync();}}
+}
+async function persist(t){
+  t.updated_at=new Date().toISOString();
+  saveLocal(); // instant on-screen update, before network request
+  if(client&&user){
+    const owner=user.id;
+    try{
+      const {error}=await client.from('taskflow_tasks').upsert({id:t.id,user_id:owner,payload:t,updated_at:t.updated_at});
+      if(error)throw error;
+      setSyncStatus('');
+    }catch(e){console.error('TaskFlow save error',e);setSyncStatus('Saved locally; sync failed: '+e.message);}
+  }
+}
 function formatDate(s,opts={weekday:'short',day:'numeric',month:'short'}){return fromKey(s).toLocaleDateString('en-GB',opts)}
 function visible(t){return !t.deleted}
 function all(){return tasks.filter(visible)}
@@ -47,10 +112,34 @@ let swipeX=0,swipeY=0;$('dailyPanel').addEventListener('touchstart',e=>{if(e.tar
 $('taskDate').value=selected;render();
 if(client){
   const authPanel=$('authPanel'), authInfo=$('authInfo');
-  function authUI(){authPanel.querySelector('#loginForm').hidden=!!user;authPanel.querySelector('#logoutBtn').hidden=!user;authInfo.textContent=user?'Signed in: '+user.email:'Sign in to sync tasks between devices';}
-  $('loginForm').onsubmit=async e=>{e.preventDefault();const email=$('loginEmail').value.trim();if(!email)return;authInfo.textContent='Sending sign-in link…';const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});authInfo.textContent=error?error.message:'Check your email for a sign-in link.';};
+  function authUI(){
+    // Hide the whole account/sync section after sign-in.
+    authPanel.hidden=!!user;
+    $('loginForm').hidden=!!user;
+    $('logoutBtn').hidden=true;
+    authInfo.textContent=user?'':'Sign in to sync tasks between devices';
+  }
+  $('loginForm').onsubmit=async e=>{
+    e.preventDefault();const email=$('loginEmail').value.trim();if(!email)return;
+    authInfo.textContent='Sending sign-in link…';
+    const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});
+    authInfo.textContent=error?error.message:'Check your email for a sign-in link.';
+  };
   $('logoutBtn').onclick=async()=>{await client.auth.signOut();};
-  client.auth.onAuthStateChange((event,session)=>{const newUser=session?.user||null;if(newUser?.id===user?.id)return;user=newUser;tasks=JSON.parse(localStorage.getItem(user?STORE+'-'+user.id:STORE)||'[]');authUI();render();if(user)setTimeout(()=>sync(),0);else $('syncStatus').textContent='Saved on this device';});
-  authUI();client.auth.getSession().then(({data})=>{if(data.session?.user && !user){user=data.session.user;tasks=JSON.parse(localStorage.getItem(STORE+'-'+user.id)||'[]');authUI();render();sync();}});
+  function setUser(next){
+    if(next?.id===user?.id)return;
+    if(realtimeChannel){client.removeChannel(realtimeChannel);realtimeChannel=null;}
+    user=next;
+    try{tasks=JSON.parse(localStorage.getItem(user?STORE+'-'+user.id:STORE)||'[]');}catch{tasks=[];}
+    authUI();render();
+    if(user){subscribeRealtime();sync();}
+    else setSyncStatus('');
+  }
+  client.auth.onAuthStateChange((_event,session)=>setUser(session?.user||null));
+  client.auth.getSession().then(({data})=>setUser(data.session?.user||null));
+  // Reconcile after a backgrounded iPhone app returns to the foreground.
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&user)sync();});
+  window.addEventListener('online',()=>{if(user)sync();});
+  authUI();
 }
 if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
