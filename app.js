@@ -9,7 +9,7 @@ const plusDays=(d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
 const monday=d=>plusDays(d,-((d.getDay()+6)%7));
 const weekKey=d=>dateKey(monday(d));
 let today=dateKey(new Date());let selected=today,week=weekKey(new Date()),month=new Date().getMonth(),year=new Date().getFullYear();
-let tasks=[],user=null,channel=null,loading=false,rerun=false,moving=null,drag=null;
+let tasks=[],user=null,channel=null,loading=false,rerun=false,moving=null,movingKind=null;
 const uuid=()=>crypto.randomUUID();
 function readCache(){try{const v=JSON.parse(localStorage.getItem(user?STORE+'-'+user.id:STORE)||'[]');tasks=Array.isArray(v)?v:[]}catch{tasks=[]}}
 function cache(){localStorage.setItem(user?STORE+'-'+user.id:STORE,JSON.stringify(tasks));render()}
@@ -25,18 +25,89 @@ function subscribe(){if(channel)client.removeChannel(channel);if(!user)return;co
 function setUser(u){if(u?.id===user?.id)return;if(channel){client.removeChannel(channel);channel=null}user=u;readCache();$('loginArea').classList.toggle('hidden',!!user);render();if(user){subscribe();sync()}}
 function rowsFor(kind){const a=active();if(kind==='day')return a.filter(t=>t.date===selected||(selected===today&&t.date&&t.date<today)).sort(sort);if(kind==='week')return a.filter(t=>!t.date&&t.week===week).sort(sort);return a.filter(t=>!t.date&&!t.week).sort(sort)}
 function render(){const now=dateKey(new Date());if(now!==today){if(selected===today)selected=now;today=now;week=weekKey(new Date())}const a=active();$('remaining').textContent=a.length;$('dayTitle').textContent=dateText(selected);$('dayHeading').textContent=selected===today?"Today's tasks":'Tasks for this day';$('weekTitle').textContent='Week of '+dateText(week);for(const kind of ['day','week','any']){const rows=rowsFor(kind);$(kind+'Count').textContent=rows.length;const parent=$(kind+'List');parent.replaceChildren();if(!rows.length){const e=document.createElement('div');e.className='empty';e.textContent='No remaining tasks';parent.append(e)}rows.forEach((t,i)=>drawTask(parent,t,i+1,kind))}renderCalendar();renderSearch()}
-function drawTask(parent,t,n,kind){const row=document.createElement('div');row.className='task';row.dataset.id=t.id;const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.setAttribute('aria-label','Complete '+t.name);checkbox.onchange=()=>{t.done=true;t.deleted=true;persist(t)};const label=document.createElement('span');label.className='task-name';label.textContent=t.name;label.onclick=()=>editName(t);const move=document.createElement('button');move.className='move';move.textContent='↗';move.title='Move to another list or day';move.onclick=()=>openMove(t);const number=document.createElement('span');number.className='number';number.textContent=n;const handle=document.createElement('span');handle.className='handle';handle.textContent='⠿';handle.title='Hold and drag to reorder';row.append(checkbox,label,move,number,handle);parent.append(row);setupDrag(row,t,kind,handle)}
+function drawTask(parent,t,n,kind){const row=document.createElement('div');row.className='task';row.dataset.id=t.id;const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.setAttribute('aria-label','Complete '+t.name);checkbox.onchange=()=>{t.done=true;t.deleted=true;persist(t)};const label=document.createElement('span');label.className='task-name';label.textContent=t.name;label.onclick=()=>editName(t);const move=document.createElement('button');move.className='move';move.textContent='↗';move.title='Move within this list or to another list';move.onclick=()=>openMove(t,kind);const number=document.createElement('span');number.className='number';number.textContent=n;row.append(checkbox,label,move,number);parent.append(row)}
 function editName(t){const name=prompt('Edit task',t.name);if(name!==null&&name.trim()&&name.trim()!==t.name){t.name=name.trim();persist(t)}}
 function addInline(kind){const slot=$(kind+'New');if(slot.childElementCount){slot.replaceChildren();return}const form=document.createElement('form');form.className='new-task';const cb=document.createElement('input');cb.type='checkbox';cb.disabled=true;const input=document.createElement('input');input.placeholder='Write a task…';input.required=true;input.maxLength=400;const button=document.createElement('button');button.textContent='+';button.title='Save task';button.setAttribute('aria-label','Save task');const close=document.createElement('button');close.type='button';close.textContent='−';close.className='close-new';close.title='Close without adding';close.onclick=()=>slot.replaceChildren();form.append(cb,input,button,close);slot.append(form);input.focus();form.onsubmit=e=>{e.preventDefault();const name=input.value.trim();if(!name)return;const t={id:uuid(),name,date:kind==='day'?selected:null,week:kind==='week'?week:kind==='day'?weekKey(fromKey(selected)):null,done:false,deleted:false,order:Date.now()+Math.random()};tasks.push(t);persist(t);slot.replaceChildren()};input.onkeydown=e=>{if(e.key==='Escape')slot.replaceChildren()}}
 document.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>addInline(b.dataset.add));
-function openMove(t){moving=t;$('moveTaskName').textContent=t.name;$('moveDate').value=t.date||selected;$('destination').value=t.date?'day':t.week?'week':'any';toggleDate();updatePositions();$('moveDialog').showModal()}
-function toggleDate(){$('moveDate').classList.toggle('hidden',$('destination').value!=='day');$('dateLabel').classList.toggle('hidden',$('destination').value!=='day');updatePositions()}
-$('destination').onchange=toggleDate;$('moveDate').onchange=updatePositions;$('cancelMove').onclick=()=>$('moveDialog').close();
-function destinationRows(dest,date){const a=active().filter(t=>t.id!==moving?.id);if(dest==='day')return a.filter(t=>t.date===date||(date===today&&t.date&&t.date<today)).sort(sort);if(dest==='week')return a.filter(t=>!t.date&&t.week===week).sort(sort);return a.filter(t=>!t.date&&!t.week).sort(sort)}
-function updatePositions(){const sel=$('movePosition');if(!sel)return;const dest=$('destination').value,date=$('moveDate').value||selected;const rows=destinationRows(dest,date);sel.replaceChildren();for(let i=1;i<=rows.length+1;i++){const opt=document.createElement('option');opt.value=i;opt.textContent=i===rows.length+1?`${i} — End of list`:String(i);sel.append(opt)}if(moving){const old=rowsFor(moving.date?'day':moving.week?'week':'any').findIndex(t=>t.id===moving.id);sel.value=String(Math.max(1,Math.min(rows.length+1,old+1)))}}
-$('confirmMove').onclick=async()=>{if(!moving)return;const t=moving,dest=$('destination').value,d=$('moveDate').value||selected,pos=Math.max(0,Number($('movePosition').value||1)-1);const rows=destinationRows(dest,d);if(dest==='day'){t.date=d;t.week=weekKey(fromKey(d));selected=d;month=fromKey(d).getMonth();year=fromKey(d).getFullYear()}else if(dest==='week'){t.date=null;t.week=week}else{t.date=null;t.week=null}rows.splice(Math.min(pos,rows.length),0,t);const stamp=Date.now();rows.forEach((item,i)=>{item.order=stamp+i;item.updated_at=new Date(stamp+i).toISOString()});$('moveDialog').close();moving=null;cache();if(client&&user){for(const item of rows){const {error}=await client.from('taskflow_tasks').upsert({id:item.id,user_id:user.id,payload:item,updated_at:item.updated_at});if(error)setStatus('Sync issue: '+error.message)}}};
-function reorder(t,targetId,kind){if(!targetId||t.id===targetId)return;const rows=rowsFor(kind);const from=rows.findIndex(x=>x.id===t.id),to=rows.findIndex(x=>x.id===targetId);if(from<0||to<0)return;rows.splice(from,1);rows.splice(to,0,t);const stamp=Date.now();rows.forEach((item,i)=>{item.order=stamp+i;item.updated_at=new Date(stamp+i).toISOString()});cache();for(const item of rows){if(client&&user)client.from('taskflow_tasks').upsert({id:item.id,user_id:user.id,payload:item,updated_at:item.updated_at}).then(({error})=>{if(error)setStatus('Reorder sync failed: '+error.message)})}}
-function setupDrag(row,t,kind,handle){let timer=null,startX=0,startY=0,started=false;handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;startX=e.clientX;startY=e.clientY;timer=setTimeout(()=>{started=true;drag={t,kind,row};row.classList.add('dragging');try{handle.setPointerCapture(e.pointerId)}catch{}},280)});handle.addEventListener('pointermove',e=>{if(!started&&Math.hypot(e.clientX-startX,e.clientY-startY)>12){clearTimeout(timer);return}if(!started)return;e.preventDefault();document.querySelectorAll('.task.over').forEach(x=>x.classList.remove('over'));const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('.task');if(target&&target!==row&&target.parentElement===$(kind+'List'))target.classList.add('over')});const end=e=>{clearTimeout(timer);if(started){const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('.task');if(target&&target.parentElement===$(kind+'List'))reorder(t,target.dataset.id,kind);row.classList.remove('dragging');document.querySelectorAll('.task.over').forEach(x=>x.classList.remove('over'))}started=false;drag=null};handle.addEventListener('pointerup',end);handle.addEventListener('pointercancel',()=>{clearTimeout(timer);started=false;row.classList.remove('dragging')});row.draggable=true;row.addEventListener('dragstart',e=>{drag={t,kind};e.dataTransfer.effectAllowed='move'});row.addEventListener('dragover',e=>{if(drag?.kind===kind){e.preventDefault();row.classList.add('over')}});row.addEventListener('dragleave',()=>row.classList.remove('over'));row.addEventListener('drop',e=>{e.preventDefault();row.classList.remove('over');if(drag?.kind===kind)reorder(drag.t,t.id,kind)});row.addEventListener('dragend',()=>{drag=null;document.querySelectorAll('.task.over').forEach(x=>x.classList.remove('over'))})}
+function openMove(t,kind=null){
+ moving=t;
+ movingKind=kind||(t.date?'day':t.week?'week':'any');
+ $('moveTaskName').textContent=t.name;
+ $('moveMode').value='same';
+ $('moveDate').value=t.date||selected;
+ $('destination').value=t.date?'day':t.week?'week':'any';
+ toggleMoveMode();
+ $('moveDialog').showModal();
+}
+function toggleMoveMode(){
+ const same=$('moveMode').value==='same';
+ $('destinationControls').classList.toggle('hidden',same);
+ toggleDate();
+}
+function toggleDate(){
+ const other=$('moveMode').value==='other';
+ const showDate=other&&$('destination').value==='day';
+ $('moveDate').classList.toggle('hidden',!showDate);
+ $('dateLabel').classList.toggle('hidden',!showDate);
+ updatePositions();
+}
+$('moveMode').onchange=toggleMoveMode;
+$('destination').onchange=toggleDate;
+$('moveDate').onchange=updatePositions;
+$('cancelMove').onclick=()=>$('moveDialog').close();
+function destinationRows(dest,date){
+ const a=active().filter(t=>t.id!==moving?.id);
+ if(dest==='day')return a.filter(t=>t.date===date||(date===today&&t.date&&t.date<today)).sort(sort);
+ if(dest==='week')return a.filter(t=>!t.date&&t.week===week).sort(sort);
+ return a.filter(t=>!t.date&&!t.week).sort(sort);
+}
+function updatePositions(){
+ const sel=$('movePosition');if(!sel)return;
+ const same=$('moveMode').value==='same';
+ const rows=same?rowsFor(movingKind).filter(t=>t.id!==moving?.id):destinationRows($('destination').value,$('moveDate').value||selected);
+ sel.replaceChildren();
+ for(let i=1;i<=rows.length+1;i++){
+  const opt=document.createElement('option');opt.value=i;
+  opt.textContent=i===rows.length+1?`${i} — End of list`:String(i);
+  sel.append(opt);
+ }
+ if(same&&moving){
+  const index=rowsFor(movingKind).findIndex(t=>t.id===moving.id);
+  sel.value=String(Math.max(1,index+1));
+ }else{sel.value=String(rows.length+1)}
+}
+async function saveOrder(rows){
+ const stamp=Date.now();
+ rows.forEach((item,i)=>{item.order=stamp+i;item.updated_at=new Date(stamp+i).toISOString()});
+ cache();
+ if(client&&user){
+  const owner=user.id;
+  for(const item of rows){
+   const {error}=await client.from('taskflow_tasks').upsert({id:item.id,user_id:owner,payload:item,updated_at:item.updated_at});
+   if(error)setStatus('Sync issue: '+error.message);
+  }
+ }
+}
+$('confirmMove').onclick=async()=>{
+ if(!moving)return;
+ const t=moving,same=$('moveMode').value==='same';
+ const pos=Math.max(0,Number($('movePosition').value||1)-1);
+ let rows;
+ if(same){
+  rows=rowsFor(movingKind).filter(item=>item.id!==t.id);
+ }else{
+  const dest=$('destination').value,d=$('moveDate').value||selected;
+  rows=destinationRows(dest,d);
+  if(dest==='day'){
+   t.date=d;t.week=weekKey(fromKey(d));
+   selected=d;month=fromKey(d).getMonth();year=fromKey(d).getFullYear();
+  }else if(dest==='week'){t.date=null;t.week=week}
+  else{t.date=null;t.week=null}
+ }
+ rows.splice(Math.min(pos,rows.length),0,t);
+ $('moveDialog').close();moving=null;movingKind=null;
+ await saveOrder(rows);
+};
 function chooseDate(key){selected=key;week=weekKey(fromKey(key));month=fromKey(key).getMonth();year=fromKey(key).getFullYear();render();$('dayPanel').scrollIntoView({behavior:'smooth',block:'start'})}
 function renderCalendar(){const cal=$('calendar');cal.replaceChildren();$('monthTitle').textContent=new Date(year,month,1).toLocaleDateString('en-GB',{month:'long',year:'numeric'});for(const s of ['M','T','W','T','F','S','S']){const d=document.createElement('div');d.className='dow';d.textContent=s;cal.append(d)}const start=monday(new Date(year,month,1));const a=active();for(let i=0;i<42;i++){const d=plusDays(start,i),key=dateKey(d),count=a.filter(t=>t.date===key).length;const b=document.createElement('button');b.className='day'+(d.getMonth()!==month?' other':'')+(key===selected?' selected':'')+(key===today?' today':'');const num=document.createElement('span');num.textContent=d.getDate();b.append(num);if(count){const c=document.createElement('span');c.className='bubble';c.textContent=count;b.append(c)}b.onclick=()=>chooseDate(key);cal.append(b)}}
 function renderSearch(){const q=$('search').value.trim().toLowerCase(),out=$('results');out.replaceChildren();if(!q)return;const found=active().filter(t=>t.name.toLowerCase().includes(q)).slice(0,40);if(!found.length){out.textContent='No matching tasks';return}for(const t of found){const row=document.createElement('div');row.className='result';const text=document.createElement('span');text.textContent=t.name;const btn=document.createElement('button');btn.textContent='Move ↗';btn.onclick=()=>openMove(t);row.append(text,btn);out.append(row)}}$('search').oninput=renderSearch;
