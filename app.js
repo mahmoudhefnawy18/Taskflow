@@ -27,12 +27,12 @@ function subscribe(){if(channel)client.removeChannel(channel);if(!user)return;co
 function setUser(u){
  authReady=true;
  const same=u?.id===user?.id;
- if(same && u){$('loginArea').classList.add('hidden');return;}
+ if(same && u){$('loginArea').classList.add('hidden');$('accountArea').classList.remove('hidden');return;}
  if(channel&&client){client.removeChannel(channel);channel=null;}
  user=u||null;
  // Never display unauthenticated local tasks as if they were cloud tasks.
- if(!user){tasks=[];render();showLoading('');showLogin('Sign in on this Home Screen app to load your tasks. Safari and Home Screen can have separate sessions.');return;}
- $('loginArea').classList.add('hidden');readCache();render();showLoading('Loading tasks from Supabase…');subscribe();sync();
+ if(!user){$('accountArea').classList.add('hidden');tasks=[];render();showLoading('');showLogin('Sign in on this Home Screen app to load your tasks. Safari and Home Screen can have separate sessions.');return;}
+ $('loginArea').classList.add('hidden');$('accountArea').classList.remove('hidden');readCache();render();showLoading('Loading tasks from Supabase…');subscribe();sync();
 }
 function rowsFor(kind){const a=active();if(kind==='day')return a.filter(t=>t.date===selected||(selected===today&&t.date&&t.date<today)).sort(sort);if(kind==='week')return a.filter(t=>!t.date&&t.week===week).sort(sort);return a.filter(t=>!t.date&&!t.week).sort(sort)}
 function render(){const now=dateKey(new Date());if(now!==today){if(selected===today)selected=now;today=now;week=weekKey(new Date())}const a=active();$('remaining').textContent=a.length;$('dayTitle').textContent=dateText(selected);$('dayHeading').textContent=selected===today?"Today's tasks":'Tasks for this day';$('weekTitle').textContent='Week of '+dateText(week);for(const kind of ['day','week','any']){const rows=rowsFor(kind);$(kind+'Count').textContent=rows.length;const parent=$(kind+'List');parent.replaceChildren();if(!rows.length){const e=document.createElement('div');e.className='empty';e.textContent='No remaining tasks';parent.append(e)}rows.forEach((t,i)=>drawTask(parent,t,i+1,kind))}renderCalendar();renderSearch()}
@@ -128,17 +128,21 @@ $('prevMonth').onclick=()=>{const d=new Date(year,month-1,1);month=d.getMonth();
 let swipeX=0,swipeY=0;$('dayPanel').addEventListener('touchstart',e=>{if(e.target.closest('.task'))return;swipeX=e.touches[0].clientX;swipeY=e.touches[0].clientY},{passive:true});$('dayPanel').addEventListener('touchend',e=>{if(e.target.closest('.task'))return;const dx=e.changedTouches[0].clientX-swipeX,dy=e.changedTouches[0].clientY-swipeY;if(Math.abs(dx)>85&&Math.abs(dx)>Math.abs(dy)*1.6)chooseDate(dateKey(plusDays(fromKey(selected),dx<0?1:-1)))},{passive:true});
 if(client){
  $('loginForm').onsubmit=async e=>{
-  e.preventDefault();$('loginMessage').textContent='Sending sign-in email…';
-  const email=$('email').value.trim();
-  const {error}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}});
-  $('loginMessage').textContent=error?error.message:'Check your email. If it contains a numeric code, enter it below. If it contains a link, that link may open Safari rather than this Home Screen app.';
+  e.preventDefault();$('loginMessage').textContent='Signing in…';
+  const email=$('email').value.trim(),password=$('password').value;
+  const {error}=await client.auth.signInWithPassword({email,password});
+  $('loginMessage').textContent=error?'Sign-in failed: '+error.message:'';
+  if(!error)$('password').value='';
  };
- $('codeForm').onsubmit=async e=>{
-  e.preventDefault();$('codeMessage').textContent='Verifying…';
-  const email=$('email').value.trim(),token=$('emailCode').value.trim();
-  if(!email){$('codeMessage').textContent='Enter your email above first.';return;}
-  const {error}=await client.auth.verifyOtp({email,token,type:'email'});
-  $('codeMessage').textContent=error?error.message:'Signed in. Loading tasks…';
+ $('showPassword').onclick=()=>{$('passwordForm').classList.toggle('hidden');};
+ $('cancelPassword').onclick=()=>{$('passwordForm').classList.add('hidden');$('newPassword').value='';};
+ $('passwordForm').onsubmit=async e=>{
+  e.preventDefault();const password=$('newPassword').value;
+  if(password.length<8){$('passwordMessage').textContent='Use at least 8 characters.';return;}
+  $('passwordMessage').textContent='Saving password…';
+  const {error}=await client.auth.updateUser({password});
+  $('passwordMessage').textContent=error?'Could not set password: '+error.message:'Password saved. You can now sign in from your iPhone Home Screen using the same email and this password.';
+  if(!error){$('newPassword').value='';$('passwordForm').classList.add('hidden');}
  };
  client.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null)});
  client.auth.getSession().then(({data,error})=>{if(error){showLogin('Could not restore sign-in: '+error.message);showLoading('');return;}setUser(data.session?.user||null)}).catch(e=>{showLogin('Sign-in check failed: '+e.message);showLoading('')});
